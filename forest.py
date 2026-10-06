@@ -1,3 +1,4 @@
+# Cross validation Balance Accuracy: 0.9349031405515305
 import pandas as pd
 import numpy as np
 from sklearn import tree

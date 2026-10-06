@@ -1,5 +1,5 @@
-# Cross validation Balance Accuracy = 94.00 %
-
+# Cross validation Balance Accuracy = 94.23%
+# Best setup: {'hidden_layers': [128, 64], 'activation': <class 'torch.nn.modules.activation.ReLU'>, 'dropout_rate': 0.2, 'lr': 0.01, 'weight_decay': 0.0001} (94.23%)
 import random
 
 import torch
@@ -17,15 +17,20 @@ OUTPUT = "network.csv"
 MODEL_PATH = "bean_MLP.pt"
 
 BATCH_SIZE = 32
-LEARNING_RATE = 0.01
-HIDDEN_LAYERS = [64, 64]
 EPOCHS = 40
 NUM_FEATURES = 16
-DROPOUT_RATE = 0.2
-WEIGHT_DECAY = 0.0001
 NUM_BEAN_TYPES = 7
 N_FOLDS = 5
 SEED = 232134
+
+# Configs to try
+PARAMETER_GRID_NETWORK = {
+    "hidden_layers": [[64, 64], [128, 64]],
+    "activation": [nn.ReLU, nn.LeakyReLU],
+    "dropout_rate": [0.0, 0.2],
+    "lr": [0.01],
+    "weight_decay": [0.0001],
+}
 
 # Keep results the same every run
 random.seed(SEED)
@@ -40,10 +45,35 @@ else:
 print(f"Using device: {device}")
 
 
+# Generates all different possible config combinations
+def generate_parameter_configs(parameter_options):
+    total_configs = 1
+    for parameter_type, options_for_parameter in parameter_options.items():
+        total_configs *= len(options_for_parameter)
+
+    configs_list = []
+    for i in range(total_configs):
+        configs_list.append({})
+
+    # basically same as "configs so far"
+    # needed to get non harmonic parameters options
+    block_size = 1
+    for parameter_type, options_for_parameter in parameter_options.items():
+        options_len = len(options_for_parameter)
+        for i in range(total_configs):
+            parameter_idx = (i // block_size) % options_len
+            paramter = options_for_parameter[parameter_idx]
+            configs_list[i][parameter_type] = paramter
+
+        block_size *= options_len
+
+    return configs_list
+
+
 class BeanData(Dataset):
     def __init__(self, inputs, labels):
-        self.features = torch.tensor(inputs, dtype=torch.float32)
-        self.labels = torch.tensor(labels, dtype=torch.long)
+        self.features = torch.as_tensor(inputs, dtype=torch.float32)
+        self.labels = torch.as_tensor(labels, dtype=torch.long)
 
         # Store total number of samples
         self.n_samples = len(labels)
@@ -62,7 +92,7 @@ Defining the architecture of MLP model
 
 class MLP(nn.Module):
     def __init__(
-        self, input_size, hidden_layers, num_outputs, activation, dropout_rate
+        self, input_size, num_outputs, hidden_layers, activation, dropout_rate, **kwargs
     ):
         super().__init__()
 
@@ -72,7 +102,7 @@ class MLP(nn.Module):
         for hidden_size in hidden_layers:
             layers.append(nn.Linear(current_size, hidden_size))
             layers.append(nn.BatchNorm1d(hidden_size))
-            layers.append(activation)
+            layers.append(activation())
             layers.append(nn.Dropout(dropout_rate))
 
             current_size = hidden_size
@@ -98,39 +128,10 @@ def cross_entropy_loss(scores, y):
     exp_scores = torch.exp(scores - scores.max(dim=1, keepdim=True).values)
     probabilities = exp_scores / exp_scores.sum(dim=1, keepdim=True)
 
-    # Calculate loss for each sample
-    batch_size = scores.shape[0]
-    total_loss = 0.0
+    row_idxs = torch.arange(len(y), device=scores.device)
 
-    for i in range(batch_size):
-        correct_prob = probabilities[i, y[i]]
-        # Avoiding log(0) by adding small epsilon
-        total_loss += -torch.log(correct_prob + 1e-9)
-
-    loss = total_loss / batch_size
-
-    return loss
-
-
-def soft_max(x):
-    # Traps final output vectors between 0 and 1 to get probabilities
-    exponentials = torch.exp(x)
-    total = torch.sum(exponentials, dim=1, keepdim=True)
-
-    # Apparently if 2 tensors are matching dimensions this is basically like a
-    # fast for loop (instead of dividing each individually)
-    return exponentials / total
-
-
-def cross_entropy(logits, labels):
-    probabilities = soft_max(logits)
-    row_idxs = torch.arange(len(labels))
-
-    # same as before, basically faster for loop to extract prob for the answer class
-    # (32, 7) -> (32,1)
-
-    correct_class_probabilities = probabilities[row_idxs, labels]
-    return -torch.mean(torch.log(correct_class_probabilities))
+    correct_class_probabilities = probabilities[row_idxs, y]
+    return -torch.mean(torch.log(correct_class_probabilities + 1e-9))
 
 
 """ 
@@ -143,7 +144,7 @@ def load_training_data():
     df = pd.read_csv(TRAIN_DATASET)
 
     # Get the bean label column
-    label_col = "Target" if "Target" in df.columns else df.columns[-1]
+    label_col = "Class" if "Class" in df.columns else df.columns[-1]
 
     label_names = sorted(df[label_col].unique())
 
@@ -199,12 +200,10 @@ Full training run
 """
 
 
-def train_model(model, train_loader, val_loader, writer, tag, weight_decay):
+def train_model(model, train_loader, val_loader, writer, tag, lr, weight_decay):
 
     # Chose gradient descent as most similar to lecture
-    optimizer = torch.optim.SGD(
-        model.parameters(), lr=LEARNING_RATE, weight_decay=weight_decay
-    )
+    optimizer = torch.optim.SGD(model.parameters(), lr=lr, weight_decay=weight_decay)
 
     val_acc = 0.0
 
@@ -221,7 +220,7 @@ def train_model(model, train_loader, val_loader, writer, tag, weight_decay):
             optimizer.zero_grad()
 
             scores = model(input_batch)
-            loss = cross_entropy(scores, label_batch)
+            loss = cross_entropy_loss(scores, label_batch)
 
             # Update weights
             loss.backward()
@@ -263,7 +262,7 @@ Train and evaluate model using cross validation
 """
 
 
-def cross_validate(inputs, labels, dropout_rate, weight_decay, run_name):
+def cross_validate(inputs, labels, config, run_name):
 
     folds = get_folds(len(inputs), N_FOLDS, SEED)
 
@@ -295,11 +294,16 @@ def cross_validate(inputs, labels, dropout_rate, weight_decay, run_name):
             shuffle=False,
         )
 
-        model = MLP(
-            NUM_FEATURES, HIDDEN_LAYERS, NUM_BEAN_TYPES, nn.ReLU(), dropout_rate
-        ).to(device)
+        model = MLP(NUM_FEATURES, NUM_BEAN_TYPES, **config).to(device)
+
         acc = train_model(
-            model, train_loader, val_loader, writer, f"fold_{k + 1}", weight_decay
+            model,
+            train_loader,
+            val_loader,
+            writer,
+            f"fold_{k + 1}",
+            config["lr"],
+            config["weight_decay"],
         )
 
         print(f"Fold {k + 1}: {acc * 100:.2f}%")
@@ -318,7 +322,7 @@ Train one final time with the settings of the winner of cross validation run (wi
 """
 
 
-def train_final(inputs, labels, dropout_rate, weight_decay):
+def train_final(inputs, labels, config, label_names):
 
     mean = inputs.mean(axis=0)
     std = inputs.std(axis=0)
@@ -327,18 +331,23 @@ def train_final(inputs, labels, dropout_rate, weight_decay):
         standardize(inputs, mean, std), labels, BATCH_SIZE, shuffle=True
     )
 
-    model = MLP(
-        NUM_FEATURES, HIDDEN_LAYERS, NUM_BEAN_TYPES, nn.ReLU(), dropout_rate
-    ).to(device)
+    model = MLP(NUM_FEATURES, NUM_BEAN_TYPES, **config).to(device)
 
     writer = SummaryWriter("runs/final")
-    train_model(model, train_loader, None, writer, "final", weight_decay)
+    train_model(
+        model, train_loader, None, writer, "final", config["lr"], config["weight_decay"]
+    )
     writer.close()
 
-    # save model parameters so they can be reloaded later
-    torch.save(model.state_dict(), MODEL_PATH)
-
-    return mean, std
+    # save model parameters and config so they can be reloaded later
+    state = {
+        "config": config,
+        "state_dict": model.state_dict(),
+        "mean": mean,
+        "std": std,
+        "label_names": label_names,
+    }
+    torch.save(state, MODEL_PATH)
 
 
 """
@@ -365,35 +374,36 @@ def bean_predictions(model, label_names, mean, std):
 def main():
 
     inputs, labels, label_names = load_training_data()
+    configs_list = generate_parameter_configs(PARAMETER_GRID_NETWORK)
 
-    # (name, dropout rate, weight decay) for each setup we compare
-    settings = [
-        ("baseline", 0.0, 0.0),
-        ("dropout", DROPOUT_RATE, 0.0),
-        ("weight_decay", 0.0, WEIGHT_DECAY),
-        ("dropout_weight_decay", DROPOUT_RATE, WEIGHT_DECAY),
-    ]
+    print(f"Configs to test: {len(configs_list)}")
 
     best_acc = 0.0
-    for name, dropout_rate, weight_decay in settings:
-        print(f"\n{name}:")
-        acc = cross_validate(inputs, labels, dropout_rate, weight_decay, f"runs/{name}")
+    best_config = None
+
+    for i, config in enumerate(configs_list):
+        print(f"\n{config}:")
+        acc = cross_validate(inputs, labels, config, f"runs/{i}")
 
         if acc > best_acc:
             best_acc = acc
-            best_name = name
-            best_dropout = dropout_rate
-            best_weight_decay = weight_decay
+            best_config = config
 
-    print(f"\nBest setup: {best_name} ({best_acc:.2f}%)")
+    print(f"\nBest setup: {best_config} ({best_acc:.2f}%)")
 
-    mean, std = train_final(inputs, labels, best_dropout, best_weight_decay)
+    # also saves the final model
+    train_final(inputs, labels, best_config, label_names)
 
     # rebuild the network and load the saved parameters back in
-    model = MLP(NUM_FEATURES, HIDDEN_LAYERS, NUM_BEAN_TYPES, nn.ReLU(), best_dropout)
-    model.load_state_dict(
-        torch.load(MODEL_PATH, map_location=device, weights_only=True)
-    )
+    state = torch.load(MODEL_PATH, map_location=device, weights_only=False)
+    saved_config = state["config"]
+    state_dict = state["state_dict"]
+    mean = state["mean"]
+    std = state["std"]
+    label_names = state["label_names"]
+
+    model = MLP(NUM_FEATURES, NUM_BEAN_TYPES, **saved_config)
+    model.load_state_dict(state_dict)
     model = model.to(device)
 
     bean_predictions(model, label_names, mean, std)
@@ -401,4 +411,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
