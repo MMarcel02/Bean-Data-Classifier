@@ -18,7 +18,7 @@ MODEL_PATH = "bean_MLP.pt"
 
 BATCH_SIZE = 32
 LEARNING_RATE = 0.01
-HIDDEN_LAYERS = [64,64]
+HIDDEN_LAYERS = [64, 64]
 EPOCHS = 40
 NUM_FEATURES = 16
 DROPOUT_RATE = 0.2
@@ -41,11 +41,10 @@ print(f"Using device: {device}")
 
 
 class BeanData(Dataset):
-
     def __init__(self, inputs, labels):
         self.features = torch.tensor(inputs, dtype=torch.float32)
         self.labels = torch.tensor(labels, dtype=torch.long)
-        
+
         # Store total number of samples
         self.n_samples = len(labels)
 
@@ -56,12 +55,15 @@ class BeanData(Dataset):
         return self.features[index], self.labels[index]
 
 
-'''
+"""
 Defining the architecture of MLP model
-'''
-class MLP(nn.Module):
+"""
 
-    def __init__(self, input_size, hidden_layers, num_outputs, activation, dropout_rate):
+
+class MLP(nn.Module):
+    def __init__(
+        self, input_size, hidden_layers, num_outputs, activation, dropout_rate
+    ):
         super().__init__()
 
         layers = []
@@ -84,10 +86,12 @@ class MLP(nn.Module):
         return self.network(features)
 
 
-'''
+"""
 # Calculates entropy loss to compare prediction result with labels
 # Use softmax to convert scores to propabilities
-'''
+"""
+
+
 def cross_entropy_loss(scores, y):
 
     # softmax calculation, subtracting the max first so exp() doesnt blow up
@@ -100,7 +104,7 @@ def cross_entropy_loss(scores, y):
 
     for i in range(batch_size):
         correct_prob = probabilities[i, y[i]]
-        # Avoiding log(0) by adding small epsilon 
+        # Avoiding log(0) by adding small epsilon
         total_loss += -torch.log(correct_prob + 1e-9)
 
     loss = total_loss / batch_size
@@ -108,9 +112,32 @@ def cross_entropy_loss(scores, y):
     return loss
 
 
-''' 
+def soft_max(x):
+    # Traps final output vectors between 0 and 1 to get probabilities
+    exponentials = torch.exp(x)
+    total = torch.sum(exponentials, dim=1, keepdim=True)
+
+    # Apparently if 2 tensors are matching dimensions this is basically like a
+    # fast for loop (instead of dividing each individually)
+    return exponentials / total
+
+
+def cross_entropy(logits, labels):
+    probabilities = soft_max(logits)
+    row_idxs = torch.arange(len(labels))
+
+    # same as before, basically faster for loop to extract prob for the answer class
+    # (32, 7) -> (32,1)
+
+    correct_class_probabilities = probabilities[row_idxs, labels]
+    return -torch.mean(torch.log(correct_class_probabilities))
+
+
+""" 
 load the training csv, convert bean labels to usable numeric values
-'''
+"""
+
+
 def load_training_data():
 
     df = pd.read_csv(TRAIN_DATASET)
@@ -138,9 +165,11 @@ def get_loader(inputs, labels, batch_size, shuffle):
     return DataLoader(dataset=dataset, batch_size=batch_size, shuffle=shuffle)
 
 
-'''
+"""
 Randomise rows and split in k chunks for cross validation step
-'''
+"""
+
+
 def get_folds(n, k, seed):
     indices = list(range(n))
     random.Random(seed).shuffle(indices)
@@ -149,32 +178,37 @@ def get_folds(n, k, seed):
     fold_size = n // k
     for i in range(k):
         start = i * fold_size
-        #last fold gets whatever is remaining
-        end = start + fold_size if i != k - 1 else n  
+        # last fold gets whatever is remaining
+        end = start + fold_size if i != k - 1 else n
         folds.append(indices[start:end])
 
     return folds
 
 
-'''
+"""
 Feature values vary greatly, must be standardized
-'''
+"""
+
+
 def standardize(inputs, mean, std):
     return (inputs - mean) / std
 
 
-'''
+"""
 Full training run
-'''
+"""
+
+
 def train_model(model, train_loader, val_loader, writer, tag, weight_decay):
 
     # Chose gradient descent as most similar to lecture
-    optimizer = torch.optim.SGD(model.parameters(), lr=LEARNING_RATE, weight_decay=weight_decay)
+    optimizer = torch.optim.SGD(
+        model.parameters(), lr=LEARNING_RATE, weight_decay=weight_decay
+    )
 
     val_acc = 0.0
 
     for epoch in range(EPOCHS):
-
         model.train()
         train_loss = 0.0
         examples_seen = 0
@@ -187,9 +221,9 @@ def train_model(model, train_loader, val_loader, writer, tag, weight_decay):
             optimizer.zero_grad()
 
             scores = model(input_batch)
-            loss = cross_entropy_loss(scores, label_batch)
+            loss = cross_entropy(scores, label_batch)
 
-            # Update weights 
+            # Update weights
             loss.backward()
             optimizer.step()
 
@@ -198,7 +232,7 @@ def train_model(model, train_loader, val_loader, writer, tag, weight_decay):
 
         train_loss /= examples_seen
         writer.add_scalar(f"{tag}/train_loss", train_loss, epoch)
-        
+
         if val_loader is None:
             continue
 
@@ -223,9 +257,12 @@ def train_model(model, train_loader, val_loader, writer, tag, weight_decay):
 
     return val_acc
 
-'''
+
+"""
 Train and evaluate model using cross validation
-'''
+"""
+
+
 def cross_validate(inputs, labels, dropout_rate, weight_decay, run_name):
 
     folds = get_folds(len(inputs), N_FOLDS, SEED)
@@ -234,7 +271,6 @@ def cross_validate(inputs, labels, dropout_rate, weight_decay, run_name):
     cv_scores = []
 
     for k in range(N_FOLDS):
-
         # Fold k is validation, the rest is training
         current_fold = folds[k]
         train_index = []
@@ -246,11 +282,25 @@ def cross_validate(inputs, labels, dropout_rate, weight_decay, run_name):
         mean = inputs[train_index].mean(axis=0)
         std = inputs[train_index].std(axis=0)
 
-        train_loader = get_loader(standardize(inputs[train_index], mean, std), labels[train_index], BATCH_SIZE, shuffle=True)
-        val_loader = get_loader(standardize(inputs[current_fold], mean, std), labels[current_fold], BATCH_SIZE, shuffle=False)
+        train_loader = get_loader(
+            standardize(inputs[train_index], mean, std),
+            labels[train_index],
+            BATCH_SIZE,
+            shuffle=True,
+        )
+        val_loader = get_loader(
+            standardize(inputs[current_fold], mean, std),
+            labels[current_fold],
+            BATCH_SIZE,
+            shuffle=False,
+        )
 
-        model = MLP(NUM_FEATURES, HIDDEN_LAYERS, NUM_BEAN_TYPES, nn.ReLU(), dropout_rate).to(device)
-        acc = train_model(model, train_loader, val_loader, writer, f"fold_{k + 1}", weight_decay)
+        model = MLP(
+            NUM_FEATURES, HIDDEN_LAYERS, NUM_BEAN_TYPES, nn.ReLU(), dropout_rate
+        ).to(device)
+        acc = train_model(
+            model, train_loader, val_loader, writer, f"fold_{k + 1}", weight_decay
+        )
 
         print(f"Fold {k + 1}: {acc * 100:.2f}%")
         cv_scores.append(acc)
@@ -263,17 +313,23 @@ def cross_validate(inputs, labels, dropout_rate, weight_decay, run_name):
     return avg_accuracy
 
 
-'''
+"""
 Train one final time with the settings of the winner of cross validation run (with or without dropout/weight decay)
-'''
+"""
+
+
 def train_final(inputs, labels, dropout_rate, weight_decay):
 
     mean = inputs.mean(axis=0)
     std = inputs.std(axis=0)
 
-    train_loader = get_loader(standardize(inputs, mean, std), labels, BATCH_SIZE, shuffle=True)
+    train_loader = get_loader(
+        standardize(inputs, mean, std), labels, BATCH_SIZE, shuffle=True
+    )
 
-    model = MLP(NUM_FEATURES, HIDDEN_LAYERS, NUM_BEAN_TYPES, nn.ReLU(), dropout_rate).to(device)
+    model = MLP(
+        NUM_FEATURES, HIDDEN_LAYERS, NUM_BEAN_TYPES, nn.ReLU(), dropout_rate
+    ).to(device)
 
     writer = SummaryWriter("runs/final")
     train_model(model, train_loader, None, writer, "final", weight_decay)
@@ -285,10 +341,12 @@ def train_final(inputs, labels, dropout_rate, weight_decay):
     return mean, std
 
 
-'''
+"""
 Perform forward pass on test set data 
 Write each sample's predicted bean type to network.csv
-'''
+"""
+
+
 def bean_predictions(model, label_names, mean, std):
 
     test_df = pd.read_csv(TEST_DATASET)
@@ -333,7 +391,9 @@ def main():
 
     # rebuild the network and load the saved parameters back in
     model = MLP(NUM_FEATURES, HIDDEN_LAYERS, NUM_BEAN_TYPES, nn.ReLU(), best_dropout)
-    model.load_state_dict(torch.load(MODEL_PATH, map_location=device, weights_only=True))
+    model.load_state_dict(
+        torch.load(MODEL_PATH, map_location=device, weights_only=True)
+    )
     model = model.to(device)
 
     bean_predictions(model, label_names, mean, std)
@@ -341,3 +401,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
