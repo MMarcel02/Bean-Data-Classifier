@@ -258,6 +258,9 @@ def main():
     train_df = pd.read_csv("dry_bean_train.csv")
     train_df = train_df.sample(frac=1, random_state=1).reset_index(drop=True)
 
+    # classes = train_df["Class"]
+    # print(set(classes))
+
     partitions_split = partition_datafram(train_df, 5)
 
     # SINGLE TREE
